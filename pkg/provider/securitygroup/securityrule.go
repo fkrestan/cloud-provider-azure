@@ -75,6 +75,19 @@ func GenerateDenyAllSecurityRuleName(ipFamily iputil.Family) string {
 	return strings.Join([]string{SecurityRuleNamePrefix, "deny-all", string(ipFamily)}, SecurityRuleNameSep)
 }
 
+// GenerateDenyBlockedSecurityRuleName returns the DenyInbound rule name for specific blocked source prefixes.
+// A hash of sorted source prefixes is appended to keep the rule name deterministic and unique per set.
+func GenerateDenyBlockedSecurityRuleName(ipFamily iputil.Family, srcPrefixes []string) string {
+	if len(srcPrefixes) == 0 {
+		return strings.Join([]string{SecurityRuleNamePrefix, "deny-blocked", string(ipFamily), "empty"}, SecurityRuleNameSep)
+	}
+	prefixes := append([]string{}, srcPrefixes...)
+	sort.Strings(prefixes)
+	h := md5.New() //nolint:gosec
+	h.Write([]byte(strings.Join(prefixes, ",")))
+	return strings.Join([]string{SecurityRuleNamePrefix, "deny-blocked", string(ipFamily), fmt.Sprintf("%x", h.Sum(nil))}, SecurityRuleNameSep)
+}
+
 // NormalizeSecurityRuleAddressPrefixes normalizes the given rule address prefixes.
 func NormalizeSecurityRuleAddressPrefixes(vs []string) []string {
 	// Remove redundant addresses.

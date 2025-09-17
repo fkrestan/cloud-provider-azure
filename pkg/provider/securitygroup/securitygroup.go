@@ -293,6 +293,55 @@ func (helper *RuleHelper) AddRuleForDenyAll(dstAddresses []netip.Addr) error {
 	return nil
 }
 
+// AddRuleForBlockedIPRanges adds a deny rule for traffic originating from specified blocked source prefixes.
+// The rule denies all protocols and destination ports to the provided destination addresses.
+func (helper *RuleHelper) AddRuleForBlockedIPRanges(srcIPRanges []netip.Prefix, dstAddresses []netip.Addr) error {
+	if len(srcIPRanges) == 0 || len(dstAddresses) == 0 {
+		return nil
+	}
+	if !iputil.ArePrefixesFromSameFamily(srcIPRanges) {
+		return ErrSecurityRuleSourceAddressesNotFromSameIPFamily
+	}
+	if !iputil.AreAddressesFromSameFamily(dstAddresses) {
+		return ErrSecurityRuleDestinationAddressesNotFromSameIPFamily
+	}
+	if srcIPRanges[0].Addr().Is4() != dstAddresses[0].Is4() {
+		return ErrSecurityRuleSourceAndDestinationNotFromSameIPFamily
+	}
+
+	var (
+		ipFamily    = iputil.FamilyOfAddr(srcIPRanges[0].Addr())
+		srcPrefixes = fnutil.Map(func(p netip.Prefix) string { return p.String() }, srcIPRanges)
+		dstPrefixes = fnutil.Map(func(a netip.Addr) string { return a.String() }, dstAddresses)
+		name        = GenerateDenyBlockedSecurityRuleName(ipFamily, srcPrefixes)
+	)
+	helper.logger.V(4).Info("Patching a rule for blocked IP ranges", "ip-family", ipFamily)
+
+	rule, err := helper.getOrCreateRule(name, rulePriorityPreferFromStart)
+	if err != nil {
+		return err
+	}
+	// Configure rule properties
+	rule.Properties.Protocol = to.Ptr(armnetwork.SecurityRuleProtocolAsterisk)
+	rule.Properties.Access = to.Ptr(armnetwork.SecurityRuleAccessDeny)
+	rule.Properties.Direction = to.Ptr(armnetwork.SecurityRuleDirectionInbound)
+	// Source
+	if len(srcPrefixes) == 1 {
+		rule.Properties.SourceAddressPrefix = to.Ptr(srcPrefixes[0])
+		rule.Properties.SourceAddressPrefixes = nil
+	} else {
+		rule.Properties.SourceAddressPrefix = nil
+		rule.Properties.SourceAddressPrefixes = to.SliceOfPtrs(srcPrefixes...)
+	}
+	rule.Properties.SourcePortRange = ptr.To("*")
+	// Destination
+	existing := ListDestinationPrefixes(rule)
+	SetDestinationPrefixes(rule, append(existing, dstPrefixes...))
+	SetAsteriskDestinationPortRange(rule)
+	helper.logger.V(4).Info("Patched a rule for blocked IP ranges", "rule-name", name)
+	return nil
+}
+
 // RemoveDestinationFromRules removes the given destination addresses from rules that match the given protocol and ports is in the retainDstPorts list.
 // It may add a new rule if the original rule needs to be split.
 func (helper *RuleHelper) RemoveDestinationFromRules(
