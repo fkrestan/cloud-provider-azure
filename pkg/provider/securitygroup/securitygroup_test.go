@@ -1968,64 +1968,203 @@ func TestGenerateDenyAllSecurityRuleName(t *testing.T) {
 	assert.Equal(t, GenerateDenyAllSecurityRuleName(iputil.IPv6), "k8s-azure-lb_deny-all_IPv6")
 }
 
-func TestSecurityGroupHelper_AddRuleForBlockedIPRanges(t *testing.T) {
-	fx := fixture.NewFixture()
-	t.Run("add new deny blocked rule IPv4", func(t *testing.T) {
-		srcPrefixes := fx.RandomIPv4Prefixes(2)
-		dstAddrs := fx.RandomIPv4Addresses(2)
-		sg := fx.Azure().SecurityGroup().WithRules(fx.Azure().NoiseSecurityRules()).Build()
-		helper := ExpectNewSecurityGroupHelper(t, sg)
-		err := helper.AddRuleForBlockedIPRanges(srcPrefixes, dstAddrs)
-		assert.NoError(t, err)
-		out, updated, err := helper.SecurityGroup()
-		assert.NoError(t, err)
-		assert.True(t, updated)
-		expectedName := GenerateDenyBlockedSecurityRuleName(iputil.IPv4, fnutil.Map(func(p netip.Prefix) string { return p.String() }, srcPrefixes))
-		testutil.ExpectHasSecurityRules(t, out, []*armnetwork.SecurityRule{{
-			Name: ptr.To(expectedName),
-			Properties: &armnetwork.SecurityRulePropertiesFormat{
-				Protocol:                   to.Ptr(armnetwork.SecurityRuleProtocolAsterisk),
-				Access:                     to.Ptr(armnetwork.SecurityRuleAccessDeny),
-				Direction:                  to.Ptr(armnetwork.SecurityRuleDirectionInbound),
-				SourceAddressPrefixes:      fnutil.Map(func(p netip.Prefix) *string { return to.Ptr(p.String()) }, srcPrefixes),
-				SourcePortRange:            ptr.To("*"),
-				DestinationAddressPrefixes: fnutil.Map(func(a netip.Addr) *string { return to.Ptr(a.String()) }, dstAddrs),
-				DestinationPortRange:       ptr.To("*"),
-				Priority:                   ptr.To(int32(500)),
-			},
-		}})
+func TestGenerateDenyBlockedSecurityRuleName(t *testing.T) {
+	t.Run("should be protocol-specific", func(t *testing.T) {
+		var (
+			ipFamily    = iputil.IPv4
+			srcPrefixes = []string{"foo", "bar"}
+			dstPorts    = []int32{80, 443}
+		)
+
+		assert.Len(t, map[string]bool{
+			GenerateDenyBlockedSecurityRuleName(armnetwork.SecurityRuleProtocolTCP, ipFamily, srcPrefixes, dstPorts):      true,
+			GenerateDenyBlockedSecurityRuleName(armnetwork.SecurityRuleProtocolUDP, ipFamily, srcPrefixes, dstPorts):      true,
+			GenerateDenyBlockedSecurityRuleName(armnetwork.SecurityRuleProtocolAsterisk, ipFamily, srcPrefixes, dstPorts): true,
+		}, 3)
+	})
+	t.Run("should be IPFamily-specific", func(t *testing.T) {
+		var (
+			protocol    = armnetwork.SecurityRuleProtocolTCP
+			srcPrefixes = []string{"foo", "bar"}
+			dstPorts    = []int32{80, 443}
+		)
+
+		assert.Len(t, map[string]bool{
+			GenerateDenyBlockedSecurityRuleName(protocol, iputil.IPv4, srcPrefixes, dstPorts): true,
+			GenerateDenyBlockedSecurityRuleName(protocol, iputil.IPv6, srcPrefixes, dstPorts): true,
+		}, 2)
 	})
 
-	t.Run("merge destinations on repeated call same src set", func(t *testing.T) {
+	t.Run("should be SrcPrefixes-specific", func(t *testing.T) {
+		var (
+			protocol = armnetwork.SecurityRuleProtocolTCP
+			ipFamily = iputil.IPv4
+			dstPorts = []int32{80, 443}
+		)
+
+		assert.Len(t, map[string]bool{
+			GenerateDenyBlockedSecurityRuleName(protocol, ipFamily, []string{"foo"}, dstPorts): true,
+			GenerateDenyBlockedSecurityRuleName(protocol, ipFamily, []string{"bar"}, dstPorts): true,
+		}, 2)
+
+		t.Run("order-insensitive", func(t *testing.T) {
+			assert.Equal(t,
+				GenerateDenyBlockedSecurityRuleName(protocol, ipFamily, []string{"foo", "bar"}, dstPorts),
+				GenerateDenyBlockedSecurityRuleName(protocol, ipFamily, []string{"bar", "foo"}, dstPorts),
+			)
+		})
+	})
+
+	t.Run("should be DstPorts-specific", func(t *testing.T) {
+		var (
+			protocol    = armnetwork.SecurityRuleProtocolTCP
+			ipFamily    = iputil.IPv4
+			srcPrefixes = []string{"foo", "bar"}
+		)
+
+		assert.Len(t, map[string]bool{
+			GenerateDenyBlockedSecurityRuleName(protocol, ipFamily, srcPrefixes, []int32{80}):  true,
+			GenerateDenyBlockedSecurityRuleName(protocol, ipFamily, srcPrefixes, []int32{443}): true,
+		}, 2)
+
+		t.Run("order-insensitive", func(t *testing.T) {
+			assert.Equal(t,
+				GenerateDenyBlockedSecurityRuleName(protocol, ipFamily, srcPrefixes, []int32{80, 443}),
+				GenerateDenyBlockedSecurityRuleName(protocol, ipFamily, srcPrefixes, []int32{443, 80}),
+			)
+		})
+	})
+}
+
+func TestSecurityGroupHelper_AddRuleForBlockedIPRanges(t *testing.T) {
+	fx := fixture.NewFixture()
+
+	t.Run("when no rule exists, it should add one", func(t *testing.T) {
+		cases := []struct {
+			TestName    string
+			IPFamily    iputil.Family
+			Protocol    armnetwork.SecurityRuleProtocol
+			SrcIPRanges []netip.Prefix
+			DstAddrs    []netip.Addr
+			DstPorts    []int32
+		}{
+			{
+				TestName:    "TCP / IPv4",
+				IPFamily:    iputil.IPv4,
+				Protocol:    armnetwork.SecurityRuleProtocolTCP,
+				SrcIPRanges: fx.RandomIPv4Prefixes(2),
+				DstAddrs:    fx.RandomIPv4Addresses(2),
+				DstPorts:    []int32{80, 443},
+			},
+			{
+				TestName:    "TCP / IPv6",
+				IPFamily:    iputil.IPv6,
+				Protocol:    armnetwork.SecurityRuleProtocolTCP,
+				SrcIPRanges: fx.RandomIPv6Prefixes(2),
+				DstAddrs:    fx.RandomIPv6Addresses(2),
+				DstPorts:    []int32{80, 443},
+			},
+			{
+				TestName:    "UDP / IPv4",
+				IPFamily:    iputil.IPv4,
+				Protocol:    armnetwork.SecurityRuleProtocolUDP,
+				SrcIPRanges: fx.RandomIPv4Prefixes(2),
+				DstAddrs:    fx.RandomIPv4Addresses(2),
+				DstPorts:    []int32{5000},
+			},
+			{
+				TestName:    "ANY / IPv4 / no ports",
+				IPFamily:    iputil.IPv4,
+				Protocol:    armnetwork.SecurityRuleProtocolAsterisk,
+				SrcIPRanges: fx.RandomIPv4Prefixes(2),
+				DstAddrs:    fx.RandomIPv4Addresses(2),
+				DstPorts:    []int32{},
+			},
+		}
+
+		for _, c := range cases {
+			t.Run(c.TestName, func(t *testing.T) {
+				var (
+					rules  = fx.Azure().NoiseSecurityRules()
+					sg     = fx.Azure().SecurityGroup().WithRules(rules).Build()
+					helper = ExpectNewSecurityGroupHelper(t, sg)
+				)
+
+				err := helper.AddRuleForBlockedIPRanges(c.SrcIPRanges, c.Protocol, c.DstAddrs, c.DstPorts)
+				assert.NoError(t, err)
+
+				out, updated, err := helper.SecurityGroup()
+				assert.NoError(t, err)
+				assert.True(t, updated)
+
+				srcPrefixesStr := fnutil.Map(func(p netip.Prefix) string { return p.String() }, c.SrcIPRanges)
+				expectedRule := fx.Azure().DenyBlockedSecurityRule(c.Protocol, c.IPFamily, srcPrefixesStr, c.DstPorts).
+					WithDestination(fnutil.Map(func(a netip.Addr) string { return a.String() }, c.DstAddrs)...).
+					Build()
+
+				testutil.ExpectHasSecurityRules(t, out, []*armnetwork.SecurityRule{expectedRule})
+			})
+		}
+	})
+
+	t.Run("merge destinations on repeated call same rule set", func(t *testing.T) {
 		srcPrefixes := fx.RandomIPv6Prefixes(2)
 		dstA := fx.RandomIPv6Addresses(2)
 		dstB := fx.RandomIPv6Addresses(1)
+		protocol := armnetwork.SecurityRuleProtocolTCP
+		dstPorts := []int32{443}
+
 		sg := fx.Azure().SecurityGroup().WithRules(fx.Azure().NoiseSecurityRules()).Build()
 		helper := ExpectNewSecurityGroupHelper(t, sg)
-		err := helper.AddRuleForBlockedIPRanges(srcPrefixes, dstA)
+
+		err := helper.AddRuleForBlockedIPRanges(srcPrefixes, protocol, dstA, dstPorts)
 		assert.NoError(t, err)
-		err = helper.AddRuleForBlockedIPRanges(srcPrefixes, dstB)
+		err = helper.AddRuleForBlockedIPRanges(srcPrefixes, protocol, dstB, dstPorts)
 		assert.NoError(t, err)
+
 		out, _, err := helper.SecurityGroup()
 		assert.NoError(t, err)
-		expectedName := GenerateDenyBlockedSecurityRuleName(iputil.IPv6, fnutil.Map(func(p netip.Prefix) string { return p.String() }, srcPrefixes))
+
 		merged := append(dstA, dstB...)
-		// Order of merged destination prefixes is not guaranteed; normalize for expectation.
 		mergedStrs := fnutil.Map(func(a netip.Addr) string { return a.String() }, merged)
 		sort.Strings(mergedStrs)
-		merged = fnutil.Map(func(s string) netip.Addr { return netip.MustParseAddr(s) }, mergedStrs)
-		testutil.ExpectHasSecurityRules(t, out, []*armnetwork.SecurityRule{{
-			Name: ptr.To(expectedName),
-			Properties: &armnetwork.SecurityRulePropertiesFormat{
-				Protocol:                   to.Ptr(armnetwork.SecurityRuleProtocolAsterisk),
-				Access:                     to.Ptr(armnetwork.SecurityRuleAccessDeny),
-				Direction:                  to.Ptr(armnetwork.SecurityRuleDirectionInbound),
-				SourceAddressPrefixes:      fnutil.Map(func(p netip.Prefix) *string { return to.Ptr(p.String()) }, srcPrefixes),
-				SourcePortRange:            ptr.To("*"),
-				DestinationAddressPrefixes: fnutil.Map(func(a netip.Addr) *string { return to.Ptr(a.String()) }, merged),
-				DestinationPortRange:       ptr.To("*"),
-				Priority:                   ptr.To(int32(500)),
-			},
-		}})
+
+		expectedRule := fx.Azure().DenyBlockedSecurityRule(protocol, iputil.IPv6, fnutil.Map(func(p netip.Prefix) string { return p.String() }, srcPrefixes), dstPorts).
+			WithDestination(mergedStrs...).
+			Build()
+
+		testutil.ExpectHasSecurityRules(t, out, []*armnetwork.SecurityRule{expectedRule})
+	})
+
+	t.Run("create new rule on repeated call different rule set", func(t *testing.T) {
+		srcPrefixes := fx.RandomIPv6Prefixes(2)
+		dstA := fx.RandomIPv6Addresses(2)
+		dstB := fx.RandomIPv6Addresses(1)
+		protocolA := armnetwork.SecurityRuleProtocolTCP
+		protocolB := armnetwork.SecurityRuleProtocolUDP
+		dstPorts := []int32{443}
+
+		sg := fx.Azure().SecurityGroup().WithRules(fx.Azure().NoiseSecurityRules()).Build()
+		helper := ExpectNewSecurityGroupHelper(t, sg)
+
+		err := helper.AddRuleForBlockedIPRanges(srcPrefixes, protocolA, dstA, dstPorts)
+		assert.NoError(t, err)
+		err = helper.AddRuleForBlockedIPRanges(srcPrefixes, protocolB, dstB, dstPorts)
+		assert.NoError(t, err)
+
+		out, _, err := helper.SecurityGroup()
+		assert.NoError(t, err)
+
+		srcPrefixesStr := fnutil.Map(func(p netip.Prefix) string { return p.String() }, srcPrefixes)
+		expectedRuleA := fx.Azure().DenyBlockedSecurityRule(protocolA, iputil.IPv6, srcPrefixesStr, dstPorts).
+			WithDestination(fnutil.Map(func(a netip.Addr) string { return a.String() }, dstA)...).
+			WithPriority(500).
+			Build()
+		expectedRuleB := fx.Azure().DenyBlockedSecurityRule(protocolB, iputil.IPv6, srcPrefixesStr, dstPorts).
+			WithDestination(fnutil.Map(func(a netip.Addr) string { return a.String() }, dstB)...).
+			WithPriority(501).
+			Build()
+
+		testutil.ExpectHasSecurityRules(t, out, []*armnetwork.SecurityRule{expectedRuleA, expectedRuleB})
 	})
 }

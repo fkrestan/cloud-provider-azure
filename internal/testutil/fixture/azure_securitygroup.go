@@ -163,24 +163,38 @@ func (f *AzureFixture) DenyAllSecurityRule(ipFamily iputil.Family) *AzureDenyAll
 	}
 }
 
-func (f *AzureFixture) DenyBlockedSecurityRule(ipFamily iputil.Family, srcPrefixes []string) *AzureDenyBlockedSecurityRuleFixture {
-	name := securitygroup.GenerateDenyBlockedSecurityRuleName(ipFamily, srcPrefixes)
+func (f *AzureFixture) DenyBlockedSecurityRule(
+	protocol armnetwork.SecurityRuleProtocol,
+	ipFamily iputil.Family,
+	srcPrefixes []string,
+	dstPorts []int32,
+) *AzureDenyBlockedSecurityRuleFixture {
+	name := securitygroup.GenerateDenyBlockedSecurityRuleName(protocol, ipFamily, srcPrefixes, dstPorts)
+	dstPortRanges := fnutil.Map(func(p int32) string { return strconv.FormatInt(int64(p), 10) }, dstPorts)
+	sort.Strings(dstPortRanges)
+
 	rule := &armnetwork.SecurityRule{
 		Name: ptr.To(name),
 		Properties: &armnetwork.SecurityRulePropertiesFormat{
-			Protocol:             to.Ptr(armnetwork.SecurityRuleProtocolAsterisk),
-			Access:               to.Ptr(armnetwork.SecurityRuleAccessDeny),
-			Direction:            to.Ptr(armnetwork.SecurityRuleDirectionInbound),
-			SourcePortRange:      ptr.To("*"),
-			DestinationPortRange: ptr.To("*"),
-			Priority:             ptr.To(int32(consts.LoadBalancerMinimumPriority)), // tests can override
+			Protocol:              to.Ptr(protocol),
+			Access:                to.Ptr(armnetwork.SecurityRuleAccessDeny),
+			Direction:             to.Ptr(armnetwork.SecurityRuleDirectionInbound),
+			SourcePortRange:       ptr.To("*"),
+			DestinationPortRanges: to.SliceOfPtrs(dstPortRanges...),
+			Priority:              ptr.To(int32(consts.LoadBalancerMinimumPriority)),
 		},
 	}
+	if len(dstPorts) == 0 {
+		rule.Properties.DestinationPortRange = ptr.To("*")
+		rule.Properties.DestinationPortRanges = nil
+	}
+
 	if len(srcPrefixes) == 1 {
 		rule.Properties.SourceAddressPrefix = ptr.To(srcPrefixes[0])
 	} else {
 		rule.Properties.SourceAddressPrefixes = to.SliceOfPtrs(srcPrefixes...)
 	}
+
 	return &AzureDenyBlockedSecurityRuleFixture{rule: rule}
 }
 

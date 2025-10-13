@@ -255,16 +255,22 @@ func (ac *AccessControl) PatchSecurityGroup(dstIPv4Addresses, dstIPv6Addresses [
 
 	// First, add deny rules for blocked IP ranges (higher precedence) per IP family.
 	if len(ac.BlockedIPRanges) > 0 {
-		blockedAggregated := iputil.AggregatePrefixes(ac.BlockedIPRanges)
-		blockedIPv4, blockedIPv6 := iputil.GroupPrefixesByFamily(blockedAggregated)
-		if len(blockedIPv4) > 0 && len(dstIPv4Addresses) > 0 {
-			if err := ac.sgHelper.AddRuleForBlockedIPRanges(blockedIPv4, dstIPv4Addresses); err != nil {
-				return fmt.Errorf("add rule for blocked IPv4 ranges: %w", err)
+		for _, protocol := range protocols {
+			dstPorts, found := ac.securityRuleDestinationPortsByProtocol[protocol]
+			if !found {
+				continue
 			}
-		}
-		if len(blockedIPv6) > 0 && len(dstIPv6Addresses) > 0 {
-			if err := ac.sgHelper.AddRuleForBlockedIPRanges(blockedIPv6, dstIPv6Addresses); err != nil {
-				return fmt.Errorf("add rule for blocked IPv6 ranges: %w", err)
+			blockedAggregated := iputil.AggregatePrefixes(ac.BlockedIPRanges)
+			blockedIPv4, blockedIPv6 := iputil.GroupPrefixesByFamily(blockedAggregated)
+			if len(blockedIPv4) > 0 && len(dstIPv4Addresses) > 0 {
+				if err := ac.sgHelper.AddRuleForBlockedIPRanges(blockedIPv4, protocol, dstIPv4Addresses, dstPorts); err != nil {
+					return fmt.Errorf("add rule for blocked IPv4 ranges: %w", err)
+				}
+			}
+			if len(blockedIPv6) > 0 && len(dstIPv6Addresses) > 0 {
+				if err := ac.sgHelper.AddRuleForBlockedIPRanges(blockedIPv6, protocol, dstIPv6Addresses, dstPorts); err != nil {
+					return fmt.Errorf("add rule for blocked IPv6 ranges: %w", err)
+				}
 			}
 		}
 	}
@@ -274,6 +280,7 @@ func (ac *AccessControl) PatchSecurityGroup(dstIPv4Addresses, dstIPv6Addresses [
 		if !found {
 			continue
 		}
+
 		if len(dstIPv4Addresses) > 0 {
 			for _, tag := range allowedServiceTags {
 				err := ac.sgHelper.AddRuleForAllowedServiceTag(tag, protocol, dstIPv4Addresses, dstPorts)

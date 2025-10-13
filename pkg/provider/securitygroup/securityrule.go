@@ -75,17 +75,29 @@ func GenerateDenyAllSecurityRuleName(ipFamily iputil.Family) string {
 	return strings.Join([]string{SecurityRuleNamePrefix, "deny-all", string(ipFamily)}, SecurityRuleNameSep)
 }
 
-// GenerateDenyBlockedSecurityRuleName returns the DenyInbound rule name for specific blocked source prefixes.
-// A hash of sorted source prefixes is appended to keep the rule name deterministic and unique per set.
-func GenerateDenyBlockedSecurityRuleName(ipFamily iputil.Family, srcPrefixes []string) string {
-	if len(srcPrefixes) == 0 {
-		return strings.Join([]string{SecurityRuleNamePrefix, "deny-blocked", string(ipFamily), "empty"}, SecurityRuleNameSep)
-	}
-	prefixes := append([]string{}, srcPrefixes...)
-	sort.Strings(prefixes)
+// GenerateDenyBlockedSecurityRuleName returns the DenyInbound rule name based on the given rule properties.
+func GenerateDenyBlockedSecurityRuleName(
+	protocol armnetwork.SecurityRuleProtocol,
+	ipFamily iputil.Family,
+	srcPrefixes []string,
+	dstPorts []int32,
+) string {
+	dstPortRanges := fnutil.Map(func(p int32) string { return strconv.FormatInt(int64(p), 10) }, dstPorts)
+
+	sort.Strings(srcPrefixes)
+	sort.Strings(dstPortRanges)
+
+	v := strings.Join([]string{
+		string(protocol),
+		strings.Join(srcPrefixes, ","),
+		strings.Join(dstPortRanges, ","),
+	}, "_")
+
 	h := md5.New() //nolint:gosec
-	h.Write([]byte(strings.Join(prefixes, ",")))
-	return strings.Join([]string{SecurityRuleNamePrefix, "deny-blocked", string(ipFamily), fmt.Sprintf("%x", h.Sum(nil))}, SecurityRuleNameSep)
+	h.Write([]byte(v))
+	ruleID := fmt.Sprintf("%x", h.Sum(nil))
+
+	return strings.Join([]string{SecurityRuleNamePrefix, "deny-blocked", string(ipFamily), ruleID}, SecurityRuleNameSep)
 }
 
 // NormalizeSecurityRuleAddressPrefixes normalizes the given rule address prefixes.

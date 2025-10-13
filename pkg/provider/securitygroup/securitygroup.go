@@ -294,8 +294,13 @@ func (helper *RuleHelper) AddRuleForDenyAll(dstAddresses []netip.Addr) error {
 }
 
 // AddRuleForBlockedIPRanges adds a deny rule for traffic originating from specified blocked source prefixes.
-// The rule denies all protocols and destination ports to the provided destination addresses.
-func (helper *RuleHelper) AddRuleForBlockedIPRanges(srcIPRanges []netip.Prefix, dstAddresses []netip.Addr) error {
+// The rule denies traffic for a specific protocol and destination ports to the provided destination address.
+func (helper *RuleHelper) AddRuleForBlockedIPRanges(
+	srcIPRanges []netip.Prefix,
+	protocol armnetwork.SecurityRuleProtocol,
+	dstAddresses []netip.Addr,
+	dstPorts []int32,
+) error {
 	if len(srcIPRanges) == 0 || len(dstAddresses) == 0 {
 		return nil
 	}
@@ -313,18 +318,20 @@ func (helper *RuleHelper) AddRuleForBlockedIPRanges(srcIPRanges []netip.Prefix, 
 		ipFamily    = iputil.FamilyOfAddr(srcIPRanges[0].Addr())
 		srcPrefixes = fnutil.Map(func(p netip.Prefix) string { return p.String() }, srcIPRanges)
 		dstPrefixes = fnutil.Map(func(a netip.Addr) string { return a.String() }, dstAddresses)
-		name        = GenerateDenyBlockedSecurityRuleName(ipFamily, srcPrefixes)
+		name        = GenerateDenyBlockedSecurityRuleName(protocol, ipFamily, srcPrefixes, dstPorts)
 	)
-	helper.logger.V(4).Info("Patching a rule for blocked IP ranges", "ip-family", ipFamily)
+	helper.logger.V(4).Info("Patching a rule for blocked IP ranges", "ip-family", ipFamily, "protocol", protocol, "destination", dstAddresses)
 
 	rule, err := helper.getOrCreateRule(name, rulePriorityPreferFromStart)
 	if err != nil {
 		return err
 	}
+
 	// Configure rule properties
-	rule.Properties.Protocol = to.Ptr(armnetwork.SecurityRuleProtocolAsterisk)
+	rule.Properties.Protocol = to.Ptr(protocol)
 	rule.Properties.Access = to.Ptr(armnetwork.SecurityRuleAccessDeny)
 	rule.Properties.Direction = to.Ptr(armnetwork.SecurityRuleDirectionInbound)
+
 	// Source
 	if len(srcPrefixes) == 1 {
 		rule.Properties.SourceAddressPrefix = to.Ptr(srcPrefixes[0])
@@ -334,10 +341,17 @@ func (helper *RuleHelper) AddRuleForBlockedIPRanges(srcIPRanges []netip.Prefix, 
 		rule.Properties.SourceAddressPrefixes = to.SliceOfPtrs(srcPrefixes...)
 	}
 	rule.Properties.SourcePortRange = ptr.To("*")
+
 	// Destination
 	existing := ListDestinationPrefixes(rule)
 	SetDestinationPrefixes(rule, append(existing, dstPrefixes...))
-	SetAsteriskDestinationPortRange(rule)
+
+	if len(dstPorts) > 0 {
+		SetDestinationPortRanges(rule, dstPorts)
+	} else {
+		SetAsteriskDestinationPortRange(rule)
+	}
+
 	helper.logger.V(4).Info("Patched a rule for blocked IP ranges", "rule-name", name)
 	return nil
 }
