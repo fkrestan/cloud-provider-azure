@@ -225,7 +225,7 @@ func TestSecurityGroupHelper_AddRuleForAllowedIPRanges(t *testing.T) {
 						SourcePortRange:            ptr.To("*"),
 						DestinationAddressPrefixes: fnutil.Map(func(v netip.Addr) *string { return to.Ptr(v.String()) }, dstAddresses),
 						DestinationPortRanges:      to.SliceOfPtrs(NormalizeDestinationPortRanges(dstPorts)...),
-						Priority:                   ptr.To(int32(500)),
+						Priority:                   ptr.To(int32(4080)),
 					},
 				},
 			}, "[`%s`] 1 allow rule should be created", c.TestName)
@@ -557,7 +557,7 @@ func TestSecurityGroupHelper_AddRuleForAllowedServiceTag(t *testing.T) {
 						SourcePortRange:            ptr.To("*"),
 						DestinationAddressPrefixes: fnutil.Map(func(v netip.Addr) *string { return to.Ptr(v.String()) }, dstAddresses),
 						DestinationPortRanges:      to.SliceOfPtrs(NormalizeDestinationPortRanges(dstPorts)...),
-						Priority:                   ptr.To(int32(500)),
+						Priority:                   ptr.To(int32(4080)),
 					},
 				},
 			}, "[`%s`] 1 allow rule should be created", c.TestName)
@@ -863,7 +863,7 @@ func TestSecurityGroupHelper_AddRuleForDenyAll(t *testing.T) {
 						SourcePortRange:            ptr.To("*"),
 						DestinationAddressPrefixes: fnutil.Map(func(v netip.Addr) *string { return to.Ptr(v.String()) }, dstAddresses),
 						DestinationPortRange:       ptr.To("*"),
-						Priority:                   ptr.To(int32(4095)),
+						Priority:                   ptr.To(int32(4096)),
 					},
 				},
 			}, "[`%s`] 1 allow rule should be created", c.TestName)
@@ -1302,7 +1302,7 @@ func TestRuleHelper_RetainDestinationFromRules(t *testing.T) {
 						SourcePortRange:            ptr.To("*"),
 						DestinationAddressPrefixes: to.SliceOfPtrs("192.168.0.1", "20.0.0.1"),
 						DestinationPortRanges:      to.SliceOfPtrs("80"),
-						Priority:                   ptr.To(int32(500)), // Within range
+						Priority:                   ptr.To(int32(4080)), // Within range
 					},
 				},
 			}
@@ -1343,7 +1343,7 @@ func TestRuleHelper_RetainDestinationFromRules(t *testing.T) {
 					SourcePortRange:          ptr.To("*"),
 					DestinationAddressPrefix: to.Ptr("192.168.0.1"), // Only retained destination
 					DestinationPortRanges:    to.SliceOfPtrs("80"),
-					Priority:                 ptr.To(int32(500)),
+					Priority:                 ptr.To(int32(4080)),
 				},
 			},
 		}, outputSG.Properties.SecurityRules)
@@ -1428,7 +1428,7 @@ func TestRuleHelper_RemoveDestinationFromRules(t *testing.T) {
 						SourcePortRange:            ptr.To("*"),
 						DestinationAddressPrefixes: to.SliceOfPtrs("10.0.0.1", "10.0.0.2", "192.168.0.1"),
 						DestinationPortRanges:      to.SliceOfPtrs("443", "80"),
-						Priority:                   ptr.To(int32(500)),
+						Priority:                   ptr.To(int32(4080)),
 					},
 				},
 				{
@@ -1441,7 +1441,7 @@ func TestRuleHelper_RemoveDestinationFromRules(t *testing.T) {
 						SourcePortRange:            ptr.To("*"),
 						DestinationAddressPrefixes: to.SliceOfPtrs("20.0.0.1", "192.168.0.1", "192.168.0.2", "20.0.0.2"),
 						DestinationPortRanges:      to.SliceOfPtrs("53"),
-						Priority:                   ptr.To(int32(501)),
+						Priority:                   ptr.To(int32(4079)),
 					},
 				},
 				{
@@ -1454,7 +1454,7 @@ func TestRuleHelper_RemoveDestinationFromRules(t *testing.T) {
 						SourcePortRange:            ptr.To("*"),
 						DestinationAddressPrefixes: to.SliceOfPtrs("8.8.8.8"),
 						DestinationPortRanges:      to.SliceOfPtrs("5000"),
-						Priority:                   ptr.To(int32(502)),
+						Priority:                   ptr.To(int32(4078)),
 					},
 				},
 			}
@@ -1475,16 +1475,16 @@ func TestRuleHelper_RemoveDestinationFromRules(t *testing.T) {
 		assert.True(t, updated)
 		testutil.ExpectEqualInJSON(t, []*armnetwork.SecurityRule{
 			{
-				Name: ptr.To("k8s-azure-lb-test-rule-0"),
+				Name: ptr.To("k8s-azure-lb-test-rule-2"),
 				Properties: &armnetwork.SecurityRulePropertiesFormat{
-					Protocol:                   to.Ptr(armnetwork.SecurityRuleProtocolTCP),
+					Protocol:                   to.Ptr(armnetwork.SecurityRuleProtocolAsterisk),
 					Access:                     to.Ptr(armnetwork.SecurityRuleAccessAllow),
 					Direction:                  to.Ptr(armnetwork.SecurityRuleDirectionInbound),
-					SourceAddressPrefixes:      to.SliceOfPtrs("src_foo", "src_bar"),
+					SourceAddressPrefix:        ptr.To("*"),
 					SourcePortRange:            ptr.To("*"),
-					DestinationAddressPrefixes: to.SliceOfPtrs("10.0.0.1", "10.0.0.2"),
-					DestinationPortRanges:      to.SliceOfPtrs("443", "80"),
-					Priority:                   ptr.To(int32(500)),
+					DestinationAddressPrefixes: to.SliceOfPtrs("8.8.8.8"),
+					DestinationPortRanges:      to.SliceOfPtrs("5000"),
+					Priority:                   ptr.To(int32(4078)),
 				},
 			},
 			{
@@ -1497,20 +1497,20 @@ func TestRuleHelper_RemoveDestinationFromRules(t *testing.T) {
 					SourcePortRange:            ptr.To("*"),
 					DestinationAddressPrefixes: to.SliceOfPtrs("20.0.0.1", "20.0.0.2"),
 					DestinationPortRanges:      to.SliceOfPtrs("53"),
-					Priority:                   ptr.To(int32(501)),
+					Priority:                   ptr.To(int32(4079)),
 				},
 			},
 			{
-				Name: ptr.To("k8s-azure-lb-test-rule-2"),
+				Name: ptr.To("k8s-azure-lb-test-rule-0"),
 				Properties: &armnetwork.SecurityRulePropertiesFormat{
-					Protocol:                   to.Ptr(armnetwork.SecurityRuleProtocolAsterisk),
+					Protocol:                   to.Ptr(armnetwork.SecurityRuleProtocolTCP),
 					Access:                     to.Ptr(armnetwork.SecurityRuleAccessAllow),
 					Direction:                  to.Ptr(armnetwork.SecurityRuleDirectionInbound),
-					SourceAddressPrefix:        ptr.To("*"),
+					SourceAddressPrefixes:      to.SliceOfPtrs("src_foo", "src_bar"),
 					SourcePortRange:            ptr.To("*"),
-					DestinationAddressPrefixes: to.SliceOfPtrs("8.8.8.8"),
-					DestinationPortRanges:      to.SliceOfPtrs("5000"),
-					Priority:                   ptr.To(int32(502)),
+					DestinationAddressPrefixes: to.SliceOfPtrs("10.0.0.1", "10.0.0.2"),
+					DestinationPortRanges:      to.SliceOfPtrs("443", "80"),
+					Priority:                   ptr.To(int32(4080)),
 				},
 			},
 		}, outputSG.Properties.SecurityRules)
@@ -1671,7 +1671,7 @@ func TestRuleHelper_RemoveDestinationFromRules(t *testing.T) {
 						SourcePortRange:            ptr.To("*"),
 						DestinationAddressPrefixes: to.SliceOfPtrs("10.0.0.1", "10.0.0.2", "192.168.0.1"),
 						DestinationPortRanges:      to.SliceOfPtrs("443", "80"),
-						Priority:                   ptr.To(int32(500)),
+						Priority:                   ptr.To(int32(4080)),
 					},
 				},
 			}
@@ -1704,7 +1704,7 @@ func TestRuleHelper_RemoveDestinationFromRules(t *testing.T) {
 						SourcePortRange:            ptr.To("*"),
 						DestinationAddressPrefixes: to.SliceOfPtrs("10.0.0.1", "10.0.0.2", "192.168.0.1"),
 						DestinationPortRanges:      to.SliceOfPtrs("443", "80"),
-						Priority:                   ptr.To(int32(500)),
+						Priority:                   ptr.To(int32(4080)),
 					},
 				},
 				{
@@ -1737,19 +1737,6 @@ func TestRuleHelper_RemoveDestinationFromRules(t *testing.T) {
 		assert.True(t, updated)
 		testutil.ExpectEqualInJSON(t, []*armnetwork.SecurityRule{
 			{
-				Name: ptr.To("k8s-azure-lb-test-rule-0"),
-				Properties: &armnetwork.SecurityRulePropertiesFormat{
-					Protocol:                 to.Ptr(armnetwork.SecurityRuleProtocolTCP),
-					Access:                   to.Ptr(armnetwork.SecurityRuleAccessAllow),
-					Direction:                to.Ptr(armnetwork.SecurityRuleDirectionInbound),
-					SourceAddressPrefixes:    to.SliceOfPtrs("bar", "foo"),
-					SourcePortRange:          ptr.To("*"),
-					DestinationAddressPrefix: ptr.To("192.168.0.1"),
-					DestinationPortRanges:    to.SliceOfPtrs("443", "80"),
-					Priority:                 ptr.To(int32(500)),
-				},
-			},
-			{
 				Name: ptr.To("k8s-azure-lb-test-rule-1"),
 				Properties: &armnetwork.SecurityRulePropertiesFormat{
 					Protocol:                   to.Ptr(armnetwork.SecurityRuleProtocolUDP), // Different protocol, should not be touched.
@@ -1772,7 +1759,20 @@ func TestRuleHelper_RemoveDestinationFromRules(t *testing.T) {
 					SourcePortRange:            ptr.To("*"),
 					DestinationAddressPrefixes: to.SliceOfPtrs("10.0.0.1", "10.0.0.2"),
 					DestinationPortRanges:      to.SliceOfPtrs("443"),
-					Priority:                   ptr.To(int32(502)),
+					Priority:                   ptr.To(int32(4079)),
+				},
+			},
+			{
+				Name: ptr.To("k8s-azure-lb-test-rule-0"),
+				Properties: &armnetwork.SecurityRulePropertiesFormat{
+					Protocol:                 to.Ptr(armnetwork.SecurityRuleProtocolTCP),
+					Access:                   to.Ptr(armnetwork.SecurityRuleAccessAllow),
+					Direction:                to.Ptr(armnetwork.SecurityRuleDirectionInbound),
+					SourceAddressPrefixes:    to.SliceOfPtrs("bar", "foo"),
+					SourcePortRange:          ptr.To("*"),
+					DestinationAddressPrefix: ptr.To("192.168.0.1"),
+					DestinationPortRanges:    to.SliceOfPtrs("443", "80"),
+					Priority:                 ptr.To(int32(4080)),
 				},
 			},
 		}, outputSG.Properties.SecurityRules)

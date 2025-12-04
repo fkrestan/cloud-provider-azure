@@ -39,6 +39,12 @@ const (
 	SecurityRuleNameSep    = "_"
 )
 
+// Priority allocation constants for bidirectional allocator
+const (
+	// Allow rules allocated descending from this priority
+	allowRulesStartPriority = int32(4080)
+)
+
 // Refer: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/azure-subscription-service-limits?toc=%2Fazure%2Fvirtual-network%2Ftoc.json#azure-resource-manager-virtual-networking-limits
 const (
 	MaxSecurityRulesPerGroup              = 1_000
@@ -101,38 +107,53 @@ func NewSecurityGroupHelper(logger logr.Logger, sg *armnetwork.SecurityGroup) (*
 	}, nil
 }
 
-type rulePriorityPrefer string
+type rulePriorityClass int
 
 const (
-	rulePriorityPreferFromStart rulePriorityPrefer = "from_start"
-	rulePriorityPreferFromEnd   rulePriorityPrefer = "from_end"
+	rulePriorityClassDeny  rulePriorityClass = iota // Deny rules allocated ascending from 500
+	rulePriorityClassAllow                          // Allow rules allocated descending from 4080
 )
 
-// nextRulePriority returns the next available priority for a new rule.
-// It takes a preference for whether to start from the beginning or end of the priority range.
-func (helper *RuleHelper) nextRulePriority(prefer rulePriorityPrefer) (int32, error) {
-	var (
-		init, end = consts.LoadBalancerMinimumPriority, consts.LoadBalancerMaximumPriority
-		delta     = 1
-	)
-	if prefer == rulePriorityPreferFromEnd {
-		init, end, delta = end-1, init-1, -1
+// nextRulePriority returns the next available priority for a new rule using bidirectional allocation.
+// Deny rules (including blocked IP ranges) are allocated ascending from LoadBalancerMinimumPriority (500).
+// Allow rules are allocated descending from allowRulesStartPriority (4080).
+// Deny-all rules use reserved priorities near LoadBalancerMaximumPriority.
+func (helper *RuleHelper) nextRulePriority(class rulePriorityClass) (int32, error) {
+	switch class {
+	case rulePriorityClassDeny:
+		// Allocate deny rules ascending from minimum priority
+		for p := int32(consts.LoadBalancerMinimumPriority); p < allowRulesStartPriority; p++ {
+			if _, found := helper.priorities[p]; !found {
+				return p, nil
+			}
+		}
+	case rulePriorityClassAllow:
+		// Allocate allow rules descending from allowRulesStartPriority
+		// Stop before deny-all reserved window
+		for p := allowRulesStartPriority; p >= int32(consts.LoadBalancerMinimumPriority); p-- {
+			if _, found := helper.priorities[p]; !found {
+				return p, nil
+			}
+		}
 	}
 
-	for init != end {
-		p := int32(init)
-		if _, found := helper.priorities[p]; found {
-			init += delta
-			continue
+	return 0, ErrSecurityRulePriorityExhausted
+}
+
+// nextDenyAllPriority returns the next available priority for deny-all rules.
+// It allocates descending from LoadBalancerMaximumPriority.
+func (helper *RuleHelper) nextDenyAllPriority() (int32, error) {
+	for p := int32(consts.LoadBalancerMaximumPriority); p > allowRulesStartPriority; p-- {
+		if _, found := helper.priorities[p]; !found {
+			return p, nil
 		}
-		return p, nil
 	}
 
 	return 0, ErrSecurityRulePriorityExhausted
 }
 
 // getOrCreateRule returns an existing rule or create a new one if it doesn't exist.
-func (helper *RuleHelper) getOrCreateRule(name string, priorityPrefer rulePriorityPrefer) (*armnetwork.SecurityRule, error) {
+func (helper *RuleHelper) getOrCreateRule(name string, class rulePriorityClass) (*armnetwork.SecurityRule, error) {
 	logger := helper.logger.WithName("getOrCreateRule").WithValues("rule-name", name)
 
 	if rule, found := helper.rules[name]; found {
@@ -140,11 +161,9 @@ func (helper *RuleHelper) getOrCreateRule(name string, priorityPrefer rulePriori
 		return rule, nil
 	}
 
-	priority, err := helper.nextRulePriority(priorityPrefer)
+	priority, err := helper.nextRulePriority(class)
 	if err != nil {
-		// NOTE: right now it won't happen because the number of rules is limited.
-		//       maxPriority[4096] - minPriority[500] > maxSecurityRulesPerGroup[1000]
-		helper.logger.Error(err, "Failed to get an available rule priority")
+		helper.logger.Error(err, "Failed to get an available rule priority", "priority-class", class)
 		return nil, err
 	}
 	rule := &armnetwork.SecurityRule{
@@ -157,7 +176,37 @@ func (helper *RuleHelper) getOrCreateRule(name string, priorityPrefer rulePriori
 	helper.rules[name] = rule
 	helper.priorities[priority] = name
 
-	logger.V(4).Info("Adding a new rule", "rule-name", name, "priority", priority)
+	logger.V(4).Info("Adding a new rule", "rule-name", name, "priority", priority, "priority-class", class)
+
+	return rule, nil
+}
+
+// getOrCreateDenyAllRule returns an existing deny-all rule or creates one with reserved priority.
+func (helper *RuleHelper) getOrCreateDenyAllRule(name string, ipFamily iputil.Family) (*armnetwork.SecurityRule, error) {
+	logger := helper.logger.WithName("getOrCreateDenyAllRule").WithValues("rule-name", name, "ip-family", ipFamily)
+
+	if rule, found := helper.rules[name]; found {
+		logger.V(4).Info("Found existing deny-all rule", "priority", *rule.Properties.Priority)
+		return rule, nil
+	}
+
+	priority, err := helper.nextDenyAllPriority()
+	if err != nil {
+		helper.logger.Error(err, "Failed to get deny-all priority", "ip-family", ipFamily)
+		return nil, err
+	}
+
+	rule := &armnetwork.SecurityRule{
+		Name: ptr.To(name),
+		Properties: &armnetwork.SecurityRulePropertiesFormat{
+			Priority: ptr.To(priority),
+		},
+	}
+
+	helper.rules[name] = rule
+	helper.priorities[priority] = name
+
+	logger.V(4).Info("Adding new deny-all rule", "rule-name", name, "priority", priority, "ip-family", ipFamily)
 
 	return rule, nil
 }
@@ -171,7 +220,7 @@ func (helper *RuleHelper) addAllowRule(
 	dstPorts []int32,
 ) error {
 	name := GenerateAllowSecurityRuleName(protocol, ipFamily, srcPrefixes, dstPorts)
-	rule, err := helper.getOrCreateRule(name, rulePriorityPreferFromStart)
+	rule, err := helper.getOrCreateRule(name, rulePriorityClassAllow)
 	if err != nil {
 		return err
 	}
@@ -268,7 +317,7 @@ func (helper *RuleHelper) AddRuleForDenyAll(dstAddresses []netip.Addr) error {
 
 	helper.logger.V(4).Info("Patching a rule for deny all", "ip-family", ipFamily)
 
-	rule, err := helper.getOrCreateRule(ruleName, rulePriorityPreferFromEnd)
+	rule, err := helper.getOrCreateDenyAllRule(ruleName, ipFamily)
 	if err != nil {
 		return err
 	}
@@ -322,7 +371,7 @@ func (helper *RuleHelper) AddRuleForBlockedIPRanges(
 	)
 	helper.logger.V(4).Info("Patching a rule for blocked IP ranges", "ip-family", ipFamily, "protocol", protocol, "destination", dstAddresses)
 
-	rule, err := helper.getOrCreateRule(name, rulePriorityPreferFromStart)
+	rule, err := helper.getOrCreateRule(name, rulePriorityClassDeny)
 	if err != nil {
 		return err
 	}
